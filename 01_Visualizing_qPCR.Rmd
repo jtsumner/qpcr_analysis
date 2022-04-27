@@ -1,0 +1,193 @@
+---
+title: "qPCR Data Visualization: BAL Methods Optimization "
+output: html_notebook
+---
+This notebook is for visualizing qPCR data for initial BAL Methods Optmization project. The goal of this notebook is to visualize the following
+
+1. Absolute DNA Concentration per Treatment 
+2. Relative (Fold Change to Native) DNA Concentration per Treatment
+3. Relative (Fold Change to Native) Human DNA per Nanogram Total DNA
+4. Relative (Fold Change to Native) Bacterial DNA per Nanogram Total DNA
+
+
+First, load packages
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(ggpubr)
+library(cowplot)
+library(ggbreak) 
+library(ggprism)
+```
+
+
+Load a) concentration and b) qPCR data
+
+```{r}
+qubit_data <-
+  read_excel("~/Documents/northwestern/01_research/bal_methods_optimization/01_data/qpcr/qubit_data.xlsx")
+
+BMOQ_metadata <- read_excel("~/Documents/northwestern/01_research/bal_methods_optimization/02_metadata/BMOQ_metadata.xlsx")
+
+cq_results_18s = 
+  read_csv("~/Documents/northwestern/01_research/bal_methods_optimization/01_data/qpcr/BMQ1/02022022/jacksumner_bmoE001-002_2022-02-03 18-43-25_JISQPCR -  Quantification Cq Results_0.csv")
+
+cq_results_16s = 
+  read_csv("~/Documents/northwestern/01_research/bal_methods_optimization/01_data/qpcr/BMQ1/02102022/JackSumner_BMOQ1.1_16S_2022-02-11 18-13-29_JISQPCR -  Quantification Cq Results_0.csv")
+
+
+```
+So, from the qPCR data file we are primarily interested in the following columns:
+
+1. Sample 
+2. Cq Mean
+And we want to use those data and the metadata to calculate a relative change to Native
+
+Therefore, a function to clean and aggregate data is necessary
+
+```{r}
+clean_qpcr_data <- function(qpcr_data){
+  clean_qpcr_data <- 
+    qpcr_data %>% 
+    rename(SQ_mean = "SQ Mean") %>% 
+    select(Sample, SQ_mean) %>%
+    unique() %>% drop_na()
+  return(clean_qpcr_data)
+}
+
+merge_metadata <- function(qpcr_data_clean, metadata){
+  merged_qpcr_data <- 
+    metadata %>% 
+    full_join(qpcr_data_clean) %>%
+    filter(Is_bal == "TRUE") %>%
+    select(!Is_bal)
+  return(merged_qpcr_data)
+}
+  
+calculate_fold_change <- function(merged_qpcr_data){
+  processed_qpcr_data <- merged_qpcr_data %>% 
+  filter(Treatment == "Native") %>%
+  select(SQ_mean, Bal_id) %>%
+  rename(SQ_mean_native = SQ_mean) %>% 
+  full_join(merged_qpcr_data, by = "Bal_id") %>%
+  mutate(fc = SQ_mean / SQ_mean_native) %>% 
+  select(!SQ_mean_native)
+  return(processed_qpcr_data)
+}
+
+calculate_cq_per_nanogram <- function(processed_qpcr_data, qubit_data){
+  merged_df <- left_join(processed_qpcr_data, qubit_data)
+  merged_df$qubit_conc <- as.double(merged_df$qubit_conc)
+  merged_df <- merged_df %>% mutate(SQ_mean_nanogram = SQ_mean / qubit_conc)
+  processed_merged_df <- merged_df %>%
+  filter(Treatment == "Native") %>%
+  select(SQ_mean_nanogram, Bal_id) %>%
+  rename(SQ_mean_native = SQ_mean_nanogram) %>% 
+  full_join(merged_df, by = "Bal_id") %>%
+  mutate(fc_nanogram = SQ_mean_nanogram / SQ_mean_native) %>% 
+  select(!SQ_mean_native)
+  return(processed_merged_df)
+}
+
+process_data <- function(qpcr_data, metadata, qubit_data){
+  qpcr_data_clean <- clean_qpcr_data(qpcr_data)
+  merged_qpcr_data <- merge_metadata(qpcr_data_clean, metadata)
+  processed_qpcr_data <- calculate_fold_change(merged_qpcr_data)
+  processed_qpcr_data_nanogram <- calculate_cq_per_nanogram(processed_qpcr_data, qubit_data)
+  return(processed_qpcr_data_nanogram)
+}
+```
+
+```{r}
+processed_18s <- process_data(cq_results_18s, BMOQ_metadata, qubit_data)
+
+processed_18s$Treatment <- 
+  factor(processed_18s$Treatment, levels = c("Native","Supernatant", "DNase"))
+
+p1 <- ggplot(processed_18s, aes(x = Treatment, y = fc)) +
+  geom_boxplot() + 
+  geom_line(aes(group = Bal_id), size = 0.05, alpha = 0.7) +
+  ylab("Human DNA (18S gene amplification)") + 
+  ggtitle("Fold Change in Human DNA", "Normalized by volume (copies/µL)") + 
+  theme_prism(base_fontface = "plain") + 
+  ylim(0, 5)
+p1
+```
+
+
+Process 16S data 
+```{r}
+processed_16s <- process_data(cq_results_16s, BMOQ_metadata, qubit_data)
+
+processed_16s$Treatment <- 
+  factor(processed_16s$Treatment, levels = c("Native","Supernatant", "DNase"))
+
+p2 <- ggplot(processed_16s, aes(x = Treatment, y = fc)) +
+  geom_boxplot() + 
+  geom_line(aes(group = Bal_id), size = 0.05, alpha = 0.7) +
+  ylab("Bacterial DNA (16S gene amplification)") + 
+  ggtitle("Fold Change in Bacterial DNA ", "Normalized by volume (copies/µL)") + 
+  theme_prism(base_fontface = "plain") + 
+  ylim(0, 5) #+ scale_y_break(c(4, 8), scales = 0.2, ticklabels=c(8.5))
+p2
+
+```
+Now plot fold change with with data normalized by mass. 
+
+```{r}
+# human
+p3 <- ggplot(processed_18s, aes(x = Treatment, y = fc_nanogram)) +
+  geom_boxplot() + 
+  geom_line(aes(group = Bal_id), size = 0.05, alpha = 0.7) +
+  ylab("Human DNA (18S gene amplification)") + 
+  ggtitle("Fold Change in Human DNA", "Normalized by Mass (copies/ng)") + 
+  theme_prism(base_fontface = "plain") + 
+  ylim(0, 5)
+p3
+
+# bacterial
+p4 <- ggplot(processed_16s, aes(x = Treatment, y = fc_nanogram)) +
+  geom_boxplot() + 
+  geom_line(aes(group = Bal_id), size = 0.05, alpha = 0.7) +
+  ylab("Bacterial DNA (16S gene amplification)") + 
+  ggtitle("Fold Change in Bacterial DNA", "Normalized by Mass (copies/ng)") + 
+  theme_prism(base_fontface = "plain") + 
+  ylim(0, 5) #+ scale_y_break(c(4, 18), scales = 0.2, ticklabels=c(18.5))
+p4
+```
+
+
+And now, plot all as a panel. Adjust size with ggsave to prevent overlap
+```{r}
+p5 <- plot_grid(p1, p2, p3, p4) 
+p5
+```
+
+```{r}
+ggsave("../05_figures/01_bmoq001-0002_foldchange_human_volume.pdf", p1)
+ggsave("../05_figures/02_bmoq001-0002_foldchange_bacterial_volume.pdf", p2)
+ggsave("../05_figures/03_bmoq001-0002_foldchange_human_mass.pdf", p3)
+ggsave("../05_figures/04_bmoq001-0002_foldchange_bacterial_mass.pdf", p4)
+ggsave("../05_figures/05_bmoq001-0002_foldchange_panel.pdf", p5, height = 10, width =8 , units = "in")
+
+```
+
+
+```{r}
+qubit_data_clean <- qubit_data %>% right_join(BMOQ_metadata) %>% filter(Is_bal == "TRUE")
+qubit_data_clean$qubit_conc <- as.double(qubit_data_clean$qubit_conc)
+qubit_data_clean$Treatment <- factor(qubit_data_clean$Treatment, level=c("Native", "Supernatant", "DNase"))
+p6 <- ggplot(qubit_data_clean, aes(x=Treatment, y=qubit_conc)) +
+  geom_boxplot() + 
+  ylab("DNA Concentration (ng/µL)") +
+  geom_line(aes(group = Bal_id), size = 0.05, alpha = 0.7) +
+  ggtitle("DNA Concentration by Treatment") +
+  theme_prism(base_fontface = "plain")
+p6
+ggsave("../05_figures/06_bmoq001-0002_DNA_Concentration.pdf", p6)
+
+```
+
+
+
